@@ -150,19 +150,33 @@
   /* ── PROGRESS & LOG ── */
   .progress { margin-top: 14px; display: none; }
   .progress.show { display: block; }
-  .progress-bar-bg { background: var(--surface3); border-radius: 4px; height: 5px; overflow: hidden; margin-bottom: 6px; border: 1px solid var(--border-light); }
-  .progress-bar { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); width: 0%; transition: width 0.3s; border-radius: 4px; }
-  .progress-text { font-size: 12px; color: var(--muted); }
+  .progress-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .progress-text { font-size: 12px; color: var(--text2); font-weight: 500; }
+  .progress-pct { font-size: 12px; color: var(--accent); font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+  .progress-bar-bg { background: var(--surface3); border-radius: 6px; height: 10px; overflow: hidden; margin-bottom: 6px; border: 1px solid var(--border); }
+  .progress-bar { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); width: 0%; transition: width 0.4s ease; border-radius: 6px; position: relative; overflow: hidden; }
+  .progress-bar::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.3) 50%, transparent 100%); animation: shimmer 1.5s infinite; }
+  @keyframes shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+  .progress-eta { font-size: 11px; color: var(--muted); margin-top: 4px; }
 
   .log { 
-    margin-top: 14px; background: #1a1d2e; border-radius: 8px; padding: 14px 16px; 
-    max-height: 180px; overflow-y: auto; display: none; border: 1px solid #2e3350;
+    margin-top: 14px; background: var(--surface); border-radius: 8px; padding: 14px 16px; 
+    max-height: 220px; overflow-y: auto; display: none;
+    border: 1px solid var(--border); box-shadow: var(--shadow);
   }
   .log.show { display: block; }
-  .log-line { font-size: 11px; color: #94a3b8; line-height: 1.9; font-family: 'JetBrains Mono', monospace; }
-  .log-line.ok { color: #4ade80; }
-  .log-line.warn { color: #fbbf24; }
-  .log-line.err { color: #f87171; }
+  .log-line { 
+    font-size: 12px; color: var(--text2); line-height: 2;
+    font-family: 'JetBrains Mono', monospace;
+    display: flex; align-items: baseline; gap: 8px;
+  }
+  .log-line::before { content: '›'; color: var(--muted); flex-shrink: 0; }
+  .log-line.ok { color: var(--green); }
+  .log-line.ok::before { content: '✓'; color: var(--green); }
+  .log-line.warn { color: var(--yellow); }
+  .log-line.warn::before { content: '⚠'; color: var(--yellow); }
+  .log-line.err { color: var(--red); }
+  .log-line.err::before { content: '✗'; color: var(--red); }
 
   /* ── STATS ── */
   .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 14px; display: none; }
@@ -413,8 +427,12 @@
   </button>
 
   <div class="progress" id="progress">
+    <div class="progress-header">
+      <div class="progress-text" id="ptext">Feldolgozás...</div>
+      <div class="progress-pct" id="ppct">0%</div>
+    </div>
     <div class="progress-bar-bg"><div class="progress-bar" id="pbar"></div></div>
-    <div class="progress-text" id="ptext">Feldolgozás...</div>
+    <div class="progress-eta" id="peta"></div>
   </div>
 
   <div class="log" id="log"></div>
@@ -543,8 +561,10 @@
           style="background:var(--surface);border:1px solid var(--border);color:var(--text);padding:7px 11px;border-radius:6px;font-family:inherit;font-size:12px;width:280px;" />
         <button class="btn-secondary" onclick="csereAddRow()">＋ Új sor</button>
       </div>
-      <div style="display:flex;align-items:center;gap:8px;">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
         <span id="csere-count" style="font-size:11px;color:var(--muted);padding:4px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:5px;">376 bejegyzés</span>
+        <span id="csere-sync-status" style="font-size:11px;color:var(--muted);padding:4px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:5px;">⏳ Betöltés...</span>
+        <button class="btn-primary" style="width:auto;padding:7px 16px;margin:0;" onclick="gistSaveCsere()" id="btn-csere-save">☁️ Mentés</button>
         <label class="btn-secondary" style="cursor:pointer;position:relative;">
           📥 Import xlsx
           <input type="file" accept=".xlsx,.xls" style="position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;" onchange="handleCsereImport(this)">
@@ -607,7 +627,7 @@ function switchTab(name) {
     }
   });
   if (name === 'optimal' && optData) renderOptTable();
-  if (name === 'csere') renderCsereTable();
+  if (name === 'csere') { if (csereData) renderCsereTable(); else initCsereData().then(renderCsereTable); }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1043,11 +1063,34 @@ async function generate() {
 // ═══════════════════════════════════════════════════════════════════
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+let _progressStart = null;
 function setProgress(pct, text) {
+  if (pct > 0 && !_progressStart) _progressStart = Date.now();
   document.getElementById('pbar').style.width = pct + '%';
-  document.getElementById('ptext').textContent = text;
+  const pctEl = document.getElementById('ppct');
+  if (pctEl) pctEl.textContent = Math.round(pct) + '%';
+  if (text) document.getElementById('ptext').textContent = text;
+  const etaEl = document.getElementById('peta');
+  if (etaEl && pct > 5 && pct < 100 && _progressStart) {
+    const elapsed = (Date.now() - _progressStart) / 1000;
+    const total = elapsed / (pct / 100);
+    const remaining = Math.max(0, Math.round(total - elapsed));
+    etaEl.textContent = remaining > 2 ? `Becsült hátralévő idő: ~${remaining} mp` : 'Hamarosan kész...';
+  } else if (etaEl && pct >= 100) {
+    etaEl.textContent = '';
+    _progressStart = null;
+  }
 }
-function showProgress(v) { document.getElementById('progress').classList.toggle('show', v); }
+function showProgress(v) {
+  document.getElementById('progress').classList.toggle('show', v);
+  if (v) {
+    _progressStart = null;
+    const pctEl = document.getElementById('ppct');
+    if (pctEl) pctEl.textContent = '0%';
+    const etaEl = document.getElementById('peta');
+    if (etaEl) etaEl.textContent = '';
+  }
+}
 function showLog(v) { document.getElementById('log').classList.toggle('show', v); }
 function addLog(msg, type='') {
   const log = document.getElementById('log');
@@ -1068,9 +1111,10 @@ const HU_STORES = new Set(STORES.filter(s => ['MAMMUT','ÁRKÁD','WESTEND','ALLE
 const EUROPEUM_FULL = 'YVES ROCHER EUROPEUM';
 
 // ── Gist config (beégetett) ──────────────────────────────────────────────
-const GIST_ID       = 'd7c9e58b9d7701cf9b6a99515c79ab12';
-const GIST_FILENAME = 'yr_optimal_stock.json';
-const GITHUB_TOKEN  = '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';
+const GIST_ID            = 'd7c9e58b9d7701cf9b6a99515c79ab12';
+const GIST_FILENAME      = 'yr_optimal_stock.json';
+const GIST_FILENAME_CSERE = 'yr_csere_map.json';
+const GITHUB_TOKEN       = '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';
 
 function buildBaseOptData() {
   // Build full optData from the embedded Excel (baseline)
@@ -1765,14 +1809,56 @@ function exportTransferXlsx() {
 
 let csereData = null; // [{orig, repl}]
 
-function initCsereData() {
-  // Load from localStorage if available, else use baked-in CSERE_MAP
-  const saved = localStorage.getItem('yr_csere_map');
-  if (saved) {
-    try { csereData = JSON.parse(saved); return; } catch(e) {}
-  }
+function buildBaseCsereData() {
   csereData = Object.entries(CSERE_MAP).map(([orig, repl]) => ({ orig, repl }));
+}
+
+function setCsereSyncStatus(msg, color) {
+  const el = document.getElementById('csere-sync-status');
+  if (!el) return;
+  el.textContent = msg;
+  el.style.color = color || 'var(--muted)';
+}
+
+async function initCsereData() {
+  setCsereSyncStatus('⏳ Betöltés...', 'var(--muted)');
+  buildBaseCsereData();
+  try {
+    const resp = await fetch(
+      `https://api.github.com/gists/${GIST_ID}`,
+      { headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github.v3+json' } }
+    );
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const gist = await resp.json();
+    const raw = gist.files[GIST_FILENAME_CSERE]?.content;
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        csereData = parsed;
+        setCsereSyncStatus(`☁️ Betöltve (${csereData.length} bejegyzés)`, 'var(--green)');
+      } else {
+        setCsereSyncStatus('☁️ Nincs felhős adat, beégetett lista aktív', 'var(--muted)');
+      }
+    } else {
+      setCsereSyncStatus('☁️ Nincs felhős adat, beégetett lista aktív', 'var(--muted)');
+    }
+  } catch(e) {
+    // Fall back to localStorage
+    const saved = localStorage.getItem('yr_csere_map');
+    if (saved) {
+      try {
+        csereData = JSON.parse(saved);
+        setCsereSyncStatus('💾 Helyi adat (Gist nem elérhető)', 'var(--yellow)');
+      } catch(e2) {
+        buildBaseCsereData();
+        setCsereSyncStatus('⚠️ Betöltési hiba, beégetett lista aktív', 'var(--red)');
+      }
+    } else {
+      setCsereSyncStatus('⚠️ Gist nem elérhető, beégetett lista aktív', 'var(--red)');
+    }
+  }
   saveCsereData();
+  updateCsereCount();
 }
 
 function saveCsereData() {
@@ -1921,6 +2007,41 @@ function handleCsereImport(input) {
   input.value = '';
 }
 
+async function gistSaveCsere() {
+  const btn = document.getElementById('btn-csere-save');
+  btn.disabled = true;
+  btn.textContent = '⏳ Mentés...';
+  setCsereSyncStatus('⏳ Mentés...', 'var(--muted)');
+  try {
+    const body = JSON.stringify({
+      files: {
+        [GIST_FILENAME_CSERE]: { content: JSON.stringify(csereData, null, 2) }
+      }
+    });
+    const resp = await fetch(
+      `https://api.github.com/gists/${GIST_ID}`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `token ${GITHUB_TOKEN}`,
+          'Accept': 'application/vnd.github.v3+json',
+          'Content-Type': 'application/json'
+        },
+        body
+      }
+    );
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    saveCsereData(); // local backup
+    const now = new Date();
+    setCsereSyncStatus(`☁️ Mentve ${now.toLocaleTimeString('hu')} (${csereData.length} bejegyzés)`, 'var(--green)');
+  } catch(e) {
+    setCsereSyncStatus('⚠️ Mentési hiba: ' + e.message, 'var(--red)');
+    saveCsereData(); // at least save locally
+  }
+  btn.disabled = false;
+  btn.textContent = '☁️ Mentés';
+}
+
 // Also sync csereData into the live CSERE_MAP used by kommissió generate
 function getActiveCsereMap() {
   if (!csereData) initCsereData();
@@ -1931,7 +2052,12 @@ function getActiveCsereMap() {
 
 window.addEventListener('DOMContentLoaded', () => {
   initOptData();
-  initCsereData();
+  initCsereData().then(() => {
+    // If csere tab is active on load, render it
+    if (document.getElementById('tab-csere')?.classList.contains('active')) {
+      renderCsereTable();
+    }
+  });
 });
 </script>
 </body>
