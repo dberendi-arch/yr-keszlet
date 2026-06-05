@@ -323,6 +323,7 @@
   <button class="tab-btn active" onclick="switchTab('kommissio')">⚡ Kommissió</button>
   <button class="tab-btn" onclick="switchTab('optimal')">📊 Optimális készlet</button>
   <button class="tab-btn" onclick="switchTab('transfer')">🔄 Boltkozi átszállítás</button>
+  <button class="tab-btn" onclick="switchTab('csere')">🔀 Cikkszám csere</button>
 </div>
 
 <!-- ══════════════════════════════════════════════════════
@@ -529,6 +530,49 @@
 </div>
 </div>
 
+<!-- ══════════════════════════════════════════════════════
+     TAB 4: CIKKSZÁM CSERE
+══════════════════════════════════════════════════════ -->
+<div id="tab-csere" class="tab-content">
+<div class="container">
+
+  <div class="card" style="margin-bottom:14px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <input type="text" id="csere-search" placeholder="🔍 Keresés régi / új cikkszám..." oninput="renderCsereTable()"
+          style="background:var(--surface);border:1px solid var(--border);color:var(--text);padding:7px 11px;border-radius:6px;font-family:inherit;font-size:12px;width:280px;" />
+        <button class="btn-secondary" onclick="csereAddRow()">＋ Új sor</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span id="csere-count" style="font-size:11px;color:var(--muted);padding:4px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:5px;">376 bejegyzés</span>
+        <label class="btn-secondary" style="cursor:pointer;position:relative;">
+          📥 Import xlsx
+          <input type="file" accept=".xlsx,.xls" style="position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;" onchange="handleCsereImport(this)">
+        </label>
+        <button class="btn-secondary" onclick="exportCsereXlsx()">📤 Export xlsx</button>
+        <button class="btn-danger" onclick="resetCsereData()">↺ Visszaállítás</button>
+      </div>
+    </div>
+  </div>
+
+  <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px;">
+    <table id="csere-table" style="width:100%;border-collapse:collapse;font-size:12px;">
+      <thead>
+        <tr style="background:#f1f3f9;position:sticky;top:0;z-index:10;">
+          <th style="padding:9px 14px;text-align:left;border-bottom:2px solid var(--border);font-size:10px;font-weight:600;letter-spacing:0.5px;text-transform:uppercase;color:var(--muted);width:40%;">Régi cikkszám (eredeti)</th>
+          <th style="padding:9px 14px;text-align:left;border-bottom:2px solid var(--border);font-size:10px;font-weight:600;letter-spacing:0.5px;text-transform:uppercase;color:var(--muted);width:40%;">Új cikkszám (helyettesítő)</th>
+          <th style="padding:9px 14px;text-align:center;border-bottom:2px solid var(--border);font-size:10px;font-weight:600;letter-spacing:0.5px;text-transform:uppercase;color:var(--muted);width:20%;">Művelet</th>
+        </tr>
+      </thead>
+      <tbody id="csere-tbody">
+        <tr><td colspan="3" style="padding:32px;text-align:center;color:var(--muted);">Betöltés...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+</div>
+</div>
+
 <script>
 // ═══════════════════════════════════════════════════════════════════
 // BEÉGETETT ADATOK
@@ -557,11 +601,13 @@ function switchTab(name) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('tab-' + name).classList.add('active');
   document.querySelectorAll('.tab-btn').forEach(b => {
-    if (b.textContent.toLowerCase().includes(name === 'kommissio' ? 'kommissió' : name === 'optimal' ? 'optimális' : 'átszállítás')) {
+    const map = { kommissio: 'kommissió', optimal: 'optimális', transfer: 'átszállítás', csere: 'cikkszám csere' };
+    if (b.textContent.toLowerCase().includes(map[name] || name)) {
       b.classList.add('active');
     }
   });
   if (name === 'optimal' && optData) renderOptTable();
+  if (name === 'csere') renderCsereTable();
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -626,7 +672,7 @@ async function generate() {
   await sleep(50);
 
   // Active csere map
-  let csereMap = { ...CSERE_MAP };
+  let csereMap = getActiveCsereMap();
   if (files['csere']) {
     const rows = sheetToRows(files['csere'].wb, 'Sheet1');
     csereMap = {};
@@ -1713,9 +1759,179 @@ function exportTransferXlsx() {
 }
 
 // Init on load
+// ═══════════════════════════════════════════════════════════════════
+// CIKKSZÁM CSERE TAB
+// ═══════════════════════════════════════════════════════════════════
+
+let csereData = null; // [{orig, repl}]
+
+function initCsereData() {
+  // Load from localStorage if available, else use baked-in CSERE_MAP
+  const saved = localStorage.getItem('yr_csere_map');
+  if (saved) {
+    try { csereData = JSON.parse(saved); return; } catch(e) {}
+  }
+  csereData = Object.entries(CSERE_MAP).map(([orig, repl]) => ({ orig, repl }));
+  saveCsereData();
+}
+
+function saveCsereData() {
+  localStorage.setItem('yr_csere_map', JSON.stringify(csereData));
+  updateCsereCount();
+}
+
+function updateCsereCount() {
+  const el = document.getElementById('csere-count');
+  if (el) el.textContent = (csereData ? csereData.length : 0) + ' bejegyzés';
+}
+
+function renderCsereTable() {
+  if (!csereData) initCsereData();
+  const q = (document.getElementById('csere-search')?.value || '').toLowerCase();
+  const tbody = document.getElementById('csere-tbody');
+  if (!tbody) return;
+
+  const rows = q
+    ? csereData.filter(r => r.orig.toLowerCase().includes(q) || r.repl.toLowerCase().includes(q))
+    : csereData;
+
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="3" style="padding:32px;text-align:center;color:var(--muted);">Nincs találat.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = rows.map((r, visIdx) => {
+    // Find real index in csereData for edits/deletes
+    const realIdx = csereData.indexOf(r);
+    return `<tr style="border-bottom:1px solid var(--border-light);">
+      <td style="padding:6px 14px;">
+        <input value="${escHtml(r.orig)}" data-idx="${realIdx}" data-field="orig"
+          onchange="csereEdit(this)"
+          style="width:100%;background:transparent;border:1px solid transparent;color:var(--accent);
+                 font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;
+                 padding:4px 6px;border-radius:4px;transition:all 0.12s;"
+          onfocus="this.style.borderColor='var(--accent)';this.style.background='var(--surface2)'"
+          onblur="this.style.borderColor='transparent';this.style.background='transparent'">
+      </td>
+      <td style="padding:6px 14px;">
+        <input value="${escHtml(r.repl)}" data-idx="${realIdx}" data-field="repl"
+          onchange="csereEdit(this)"
+          style="width:100%;background:transparent;border:1px solid transparent;color:var(--green);
+                 font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;
+                 padding:4px 6px;border-radius:4px;transition:all 0.12s;"
+          onfocus="this.style.borderColor='var(--green)';this.style.background='var(--surface2)'"
+          onblur="this.style.borderColor='transparent';this.style.background='transparent'">
+      </td>
+      <td style="padding:6px 14px;text-align:center;">
+        <button onclick="csereDelete(${realIdx})"
+          style="background:var(--red-light);color:var(--red);border:1px solid #fca5a5;
+                 border-radius:5px;padding:3px 10px;font-size:11px;cursor:pointer;font-family:inherit;">
+          Töröl
+        </button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function csereEdit(input) {
+  const idx = parseInt(input.dataset.idx);
+  const field = input.dataset.field;
+  csereData[idx][field] = input.value.trim();
+  saveCsereData();
+}
+
+function csereDelete(idx) {
+  if (!confirm(`Törlöd ezt? "${csereData[idx].orig}" → "${csereData[idx].repl}"`)) return;
+  csereData.splice(idx, 1);
+  saveCsereData();
+  renderCsereTable();
+}
+
+function csereAddRow() {
+  if (!csereData) initCsereData();
+  csereData.unshift({ orig: '', repl: '' });
+  saveCsereData();
+  renderCsereTable();
+  // Focus the first input
+  setTimeout(() => {
+    const first = document.querySelector('#csere-tbody input');
+    if (first) first.focus();
+  }, 50);
+}
+
+function resetCsereData() {
+  if (!confirm('Visszaállítod az összes cikkszám-csere bejegyzést az eredeti beégetett értékekre?')) return;
+  localStorage.removeItem('yr_csere_map');
+  csereData = null;
+  initCsereData();
+  renderCsereTable();
+}
+
+function exportCsereXlsx() {
+  if (!csereData) initCsereData();
+  const wb = XLSX.utils.book_new();
+  const aoa = [
+    ['Régi cikkszám (eredeti)', 'Új cikkszám (helyettesítő)'],
+    ...csereData.map(r => [r.orig, r.repl])
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [{wch:28},{wch:28}];
+  XLSX.utils.book_append_sheet(wb, ws, 'Cikkszám csere');
+  XLSX.writeFile(wb, 'cikkszam_csere_export.xlsx');
+}
+
+function handleCsereImport(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const wb = XLSX.read(e.target.result, { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+      // Find header row
+      let dataStart = 0;
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i].map(v => String(v).toLowerCase());
+        if (row.some(v => v.includes('régi') || v.includes('orig') || v.includes('cikkszám'))) {
+          dataStart = i + 1; break;
+        }
+      }
+      const imported = [];
+      for (let i = dataStart; i < rows.length; i++) {
+        const orig = String(rows[i][0] || '').trim();
+        const repl = String(rows[i][1] || '').trim();
+        if (orig && repl) imported.push({ orig, repl });
+      }
+      if (!imported.length) { alert('Nem találhatók adatok a fájlban.'); return; }
+      if (!confirm(`${imported.length} bejegyzést töltesz be. Ez felülírja a jelenlegi listát. Folytatod?`)) return;
+      csereData = imported;
+      saveCsereData();
+      renderCsereTable();
+      alert(`Import kész: ${imported.length} bejegyzés betöltve.`);
+    } catch(err) {
+      alert('Import hiba: ' + err.message);
+    }
+  };
+  reader.readAsArrayBuffer(file);
+  input.value = '';
+}
+
+// Also sync csereData into the live CSERE_MAP used by kommissió generate
+function getActiveCsereMap() {
+  if (!csereData) initCsereData();
+  const map = {};
+  csereData.forEach(r => { if (r.orig && r.repl) map[r.orig] = r.repl; });
+  return map;
+}
+
 window.addEventListener('DOMContentLoaded', () => {
-  // Initialize optimal data (loads from Gist)
   initOptData();
+  initCsereData();
 });
 </script>
 </body>
